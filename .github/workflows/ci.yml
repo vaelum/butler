@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+
+# Minimal GITHUB_TOKEN scope: this workflow only checks out the repo and never
+# writes back to it, so keep the token read-only.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref so the autoscaling pool isn't churning
+# on stale commits.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # GitHub-hosted runners: free for public repositories, and this is a
+    # pure-Python package with no Docker, toolchain or hardware needs — nothing
+    # here justifies occupying the self-hosted pool.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Installing into a venv rather than running pytest from the working tree
+      # is deliberate: it exercises the same path the bootstrap shim takes on a
+      # consuming machine, so a packaging mistake (a template left out of the
+      # wheel, a bad dependency) fails here rather than in a project.
+      - name: Install
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --disable-pip-version-check -e ".[dev]"
+
+      - name: Test
+        run: .venv/bin/python -m pytest -q
+
+      # End-to-end smoke test of what a consuming project actually does:
+      # scaffold a project, then drive the generated shim against this working
+      # tree. Catches breakage in `butler new`, the shim, config loading, task
+      # discovery and the command tree in one go.
+      - name: Scaffold and run a generated butler
+        env:
+          BUTLER_HARNESS_PATH: ${{ github.workspace }}
+        run: |
+          set -eux
+          work="$(mktemp -d)"
+          .venv/bin/butler new "$work" --name smoke --app --server --tasks
+          cd "$work"
+          python3 butler.py --help
+          python3 butler.py hello
+          python3 butler.py -n app build
